@@ -1,0 +1,20 @@
+diff --git a/notxv6/ph.c b/notxv6/ph.c
+index e64559e..5301d72 100644
+--- a/notxv6/ph.c
++++ b/notxv6/ph.c
+@@ -65,12 +65,15 @@ get(int key)
+ {
+   int i = key % NBUCKET;
+ 
++  pthread_mutex_lock(&locks[i]);
+ 
+   struct entry *e = 0;
+   for (e = table[i]; e != 0; e = e->next) {
+     if (e->key == key) break;
+   }
+ 
++  pthread_mutex_unlock(&locks[i]);
++    
+   return e;
+ }
+ 

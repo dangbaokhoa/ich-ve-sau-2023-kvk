@@ -1,0 +1,11 @@
+Missing keys occur with 2 threads due to a race condition when both threads attempt to insert new keys into the same hash bucket concurrently without any mutual exclusion (locks). 
+
+Here is a sequence of events with 2 threads that leads to a missing key:
+
+1. Thread 1 and Thread 2 both want to insert different keys that happen to hash to the same bucket (e.g., table[i]).
+2. Thread 1 reads the current head pointer of the linked list at table[i].
+3. Before Thread 1 can update the list, a context switch occurs. Thread 2 also reads the *same* current head pointer at table[i].
+4. Thread 1 resumes, allocates a new entry, sets its 'next' pointer to the head it read in step 2, and overwrites table[i] to point to this new entry.
+5. Thread 2 allocates its new entry, sets its 'next' pointer to the *old* head it read in step 3, and overwrites table[i] to point to its new entry.
+
+Result: Because Thread 2 overwrote table[i] without knowing about Thread 1's insertion, Thread 1's entry is completely detached from the list and lost. This results in a missing key.
