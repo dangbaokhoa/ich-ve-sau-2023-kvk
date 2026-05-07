@@ -1,0 +1,183 @@
+diff --git a/notxv6/barrier.c b/notxv6/barrier.c
+index 12793e8..d02a879 100644
+--- a/notxv6/barrier.c
++++ b/notxv6/barrier.c
+@@ -25,12 +25,19 @@ barrier_init(void)
+ static void 
+ barrier()
+ {
+-  // YOUR CODE HERE
+-  //
+-  // Block until all threads have called barrier() and
+-  // then increment bstate.round.
+-  //
+-  
++  pthread_mutex_lock(&bstate.barrier_mutex);
++  bstate.nthread++;
++  int current_round = bstate.round;
++  if(bstate.nthread == nthread) {
++    bstate.round++;
++    bstate.nthread = 0;
++    pthread_cond_broadcast(&bstate.barrier_cond);
++  } else {
++    while(bstate.round == current_round) {
++      pthread_cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);
++    }
++  }
++  pthread_mutex_unlock(&bstate.barrier_mutex);
+ }
+ 
+ static void *
+diff --git a/notxv6/ph.c b/notxv6/ph.c
+index 82afe76..e64559e 100644
+--- a/notxv6/ph.c
++++ b/notxv6/ph.c
+@@ -14,6 +14,7 @@ struct entry {
+   struct entry *next;
+ };
+ struct entry *table[NBUCKET];
++pthread_mutex_t locks[NBUCKET];
+ int keys[NKEYS];
+ int nthread = 1;
+ 
+@@ -40,6 +41,7 @@ static
+ void put(int key, int value)
+ {
+   int i = key % NBUCKET;
++  pthread_mutex_lock(&locks[i]);
+ 
+   // is the key already present?
+   struct entry *e = 0;
+@@ -54,6 +56,7 @@ void put(int key, int value)
+     // the new is new.
+     insert(key, value, &table[i], table[i]);
+   }
++  pthread_mutex_unlock(&locks[i]);
+ 
+ }
+ 
+@@ -114,6 +117,9 @@ main(int argc, char *argv[])
+   tha = malloc(sizeof(pthread_t) * nthread);
+   srandom(0);
+   assert(NKEYS % nthread == 0);
++  for (int i = 0; i < NBUCKET; i++) {
++    pthread_mutex_init(&locks[i], NULL);
++  }
+   for (int i = 0; i < NKEYS; i++) {
+     keys[i] = random();
+   }
+diff --git a/user/uthread.c b/user/uthread.c
+index 18b773d..bb443a8 100644
+--- a/user/uthread.c
++++ b/user/uthread.c
+@@ -11,9 +11,29 @@
+ #define MAX_THREAD  4
+ 
+ 
++struct context {
++  uint64 ra;
++  uint64 sp;
++
++  // callee-saved
++  uint64 s0;
++  uint64 s1;
++  uint64 s2;
++  uint64 s3;
++  uint64 s4;
++  uint64 s5;
++  uint64 s6;
++  uint64 s7;
++  uint64 s8;
++  uint64 s9;
++  uint64 s10;
++  uint64 s11;
++};
++
+ struct thread {
+   char       stack[STACK_SIZE]; /* the thread's stack */
+   int        state;             /* FREE, RUNNING, RUNNABLE */
++  struct context context;
+ };
+ struct thread all_thread[MAX_THREAD];
+ struct thread *current_thread;
+@@ -60,6 +80,7 @@ thread_schedule(void)
+      * Invoke thread_switch to switch from t to next_thread:
+      * thread_switch(??, ??);
+      */
++    thread_switch((uint64)&t->context, (uint64)&next_thread->context);
+   } else
+     next_thread = 0;
+ }
+@@ -74,6 +95,8 @@ thread_create(void (*func)())
+   }
+   t->state = RUNNABLE;
+   // YOUR CODE HERE
++  t->context.ra = (uint64)func;
++  t->context.sp = (uint64)t->stack + STACK_SIZE;
+ }
+ 
+ void 
+diff --git a/user/uthread_switch.S b/user/uthread_switch.S
+index 5defb12..57a2a3a 100644
+--- a/user/uthread_switch.S
++++ b/user/uthread_switch.S
+@@ -8,4 +8,33 @@
+ 	.globl thread_switch
+ thread_switch:
+ 	/* YOUR CODE HERE */
+-	ret    /* return to ra */
++        sd ra, 0(a0)
++        sd sp, 8(a0)
++        sd s0, 16(a0)
++        sd s1, 24(a0)
++        sd s2, 32(a0)
++        sd s3, 40(a0)
++        sd s4, 48(a0)
++        sd s5, 56(a0)
++        sd s6, 64(a0)
++        sd s7, 72(a0)
++        sd s8, 80(a0)
++        sd s9, 88(a0)
++        sd s10, 96(a0)
++        sd s11, 104(a0)
++
++        ld ra, 0(a1)
++        ld sp, 8(a1)
++        ld s0, 16(a1)
++        ld s1, 24(a1)
++        ld s2, 32(a1)
++        ld s3, 40(a1)
++        ld s4, 48(a1)
++        ld s5, 56(a1)
++        ld s6, 64(a1)
++        ld s7, 72(a1)
++        ld s8, 80(a1)
++        ld s9, 88(a1)
++        ld s10, 96(a1)
++        ld s11, 104(a1)
++        ret
+diff --git a/answers-thread.txt b/answers-thread.txt
+new file mode 100755
+index 0000000..eae6685
+--- /dev/null
++++ b/answers-thread.txt
+@@ -0,0 +1,11 @@
++Missing keys occur with 2 threads due to a race condition when both threads attempt to insert new keys into the same hash bucket concurrently without any mutual exclusion (locks). 
++
++Here is a sequence of events with 2 threads that leads to a missing key:
++
++1. Thread 1 and Thread 2 both want to insert different keys that happen to hash to the same bucket (e.g., table[i]).
++2. Thread 1 reads the current head pointer of the linked list at table[i].
++3. Before Thread 1 can update the list, a context switch occurs. Thread 2 also reads the *same* current head pointer at table[i].
++4. Thread 1 resumes, allocates a new entry, sets its 'next' pointer to the head it read in step 2, and overwrites table[i] to point to this new entry.
++5. Thread 2 allocates its new entry, sets its 'next' pointer to the *old* head it read in step 3, and overwrites table[i] to point to its new entry.
++
++Result: Because Thread 2 overwrote table[i] without knowing about Thread 1's insertion, Thread 1's entry is completely detached from the list and lost. This results in a missing key.
+\ No newline at end of file
+diff --git a/time.txt b/time.txt
+new file mode 100755
+index 0000000..0cfbf08
+--- /dev/null
++++ b/time.txt
+@@ -0,0 +1 @@
++2
